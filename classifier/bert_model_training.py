@@ -1,9 +1,19 @@
 import json
 import os
 from datetime import datetime
+import csv
 
-import boto3
-import pytz
+try:
+    import boto3  # type: ignore
+    s3_client = boto3.client('s3')
+except Exception:  # pragma: no cover - optional dependency
+    boto3 = None
+    s3_client = None
+
+try:
+    import pytz  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    pytz = None
 
 import numpy as np
 import pandas as pd
@@ -21,8 +31,9 @@ from transformers import (AutoModel, AutoModelForSequenceClassification,
 from preprocess import clean_text, read_data, read_clean_data
 from common import strip_outer_quotes
 import logging
+import sys
+import traceback
 
-s3_client = boto3.client('s3')
 BUCKET_NAME = 'dsunjay-bucket'
 
 # Configure logging
@@ -51,7 +62,12 @@ def load_dataset(file_path: str) -> pd.DataFrame:
     :func:`preprocess.read_clean_data`.
     """
 
-    preview = pd.read_csv(file_path, nrows=1)
+    preview = pd.read_csv(
+        file_path,
+        nrows=1,
+        quoting=csv.QUOTE_NONE,
+        escapechar='\\',
+    )
     if "text" in preview.columns:
         df = read_data(file_path)
     else:
@@ -84,7 +100,11 @@ def upload_directory_to_s3(bucket_name, directory_path, s3_folder):
     :param directory_path: Directory to upload
     :param s3_folder: Folder path in the S3 bucket
     """
-    for root, dirs, files in os.walk(directory_path):
+    if s3_client is None:
+        logging.warning("boto3 not available; skipping S3 upload")
+        return
+
+    for root, _, files in os.walk(directory_path):
         for file in files:
             local_path = os.path.join(root, file)
             relative_path = os.path.relpath(local_path, directory_path)
@@ -212,12 +232,16 @@ def run_encoding_pipeline(df, text_column_name, model_name="allenai/longformer-b
         traceback.print_exc(file=sys.stdout)
 
 
+
 def output_eval_results(eval_result, model, model_name):
 
     # Add additional information
     eval_result['model_name'] = model_name
-    est = pytz.timezone('US/Eastern')
-    eval_time = datetime.now(est).strftime("%Y-%m-%d__%H_%M_%S")
+    if pytz is not None:
+        est = pytz.timezone('US/Eastern')
+        eval_time = datetime.now(est).strftime("%Y-%m-%d__%H_%M_%S")
+    else:
+        eval_time = datetime.now().strftime("%Y-%m-%d__%H_%M_%S")
     eval_result['eval_time'] = eval_time
     # Include model hyperparameters if available
     if hasattr(model.config, 'to_dict'):
