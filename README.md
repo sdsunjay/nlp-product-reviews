@@ -1,8 +1,16 @@
 # nlp_product_reviews
-Use BERT to pretrain a model for categorizing reviews 
+Use BERT to pretrain a model for categorizing reviews
 
 ## tutorial
 I am following the tutorial shown [here](http://jalammar.github.io/a-visual-guide-to-using-bert-for-the-first-time/) by [Jay Alammar](https://twitter.com/JayAlammar)
+
+## Requirements
+This project requires **Python 3.12** and the GPU build of **PyTorch 2.7**
+compiled with **CUDA 12.8**. Install all Python dependencies with:
+
+```bash
+pip install -r requirements.txt
+```
 
 ## Training Output
 
