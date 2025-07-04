@@ -1,5 +1,6 @@
 import datetime
 import pandas as pd
+import csv
 
 import os.path
 import sys, traceback
@@ -80,6 +81,18 @@ def clean_text(text):
     text = cleanr.sub('', fixed_text.strip())
     return remove_stop_words(unicodedata.normalize('NFC', text))
 
+def ensure_surrounding_quotes(text: str) -> str:
+    """Return ``text`` wrapped in double quotes if not already."""
+
+    if not isinstance(text, str):
+        return text
+    stripped = text.strip()
+    if not stripped.startswith('"'):
+        stripped = '"' + stripped
+    if not stripped.endswith('"'):
+        stripped = stripped + '"'
+    return stripped
+
 def read_data(filepath):
     """Read the CSV from disk."""
     df = pd.read_csv(filepath, delimiter=',')
@@ -130,10 +143,17 @@ def main():
     # Format the current time as a string in the "HH:MM" format
     current_time = now.strftime("%y_%m_%d_%H_%M")
     df = read_data(training_filepath)
+    df["clean_text"] = df["clean_text"].apply(ensure_surrounding_quotes)
     header = ["clean_text", "star_rating", "human_tag"]
     output_path = f'data/{current_time}_clean_training.csv'
     print(f"Outputing to {output_path}")
-    df.to_csv(output_path, columns = header, index=False)
+    df.to_csv(
+        output_path,
+        columns=header,
+        index=False,
+        quoting=csv.QUOTE_NONE,
+        escapechar="\\",
+    )
 
 if __name__ == "__main__":
     main()

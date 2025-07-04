@@ -19,6 +19,7 @@ from transformers import (AutoModel, AutoModelForSequenceClassification,
                           TrainerCallback)
 
 from preprocess import clean_text, read_data, read_clean_data
+from common import strip_outer_quotes
 import logging
 
 s3_client = boto3.client('s3')
@@ -56,6 +57,7 @@ def load_dataset(file_path: str) -> pd.DataFrame:
     else:
         df = read_clean_data(file_path)
     df = df.dropna(subset=["human_tag"])
+    df["clean_text"] = df["clean_text"].map(strip_outer_quotes)
     return df
 
 

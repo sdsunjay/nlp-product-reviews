@@ -1,4 +1,4 @@
-from common import tokenizeText1
+from common import tokenizeText1, strip_outer_quotes
 
 import os
 import sys
@@ -201,6 +201,7 @@ def testing(features):
         print('Testing file not found in the app path.')
         exit()
     df1 = read_data(testing_filepath)
+    df1["clean_text"] = df1["clean_text"].map(strip_outer_quotes)
     df1 = df1.dropna()
     a = np.array_split(df1,8)
     i = 0
