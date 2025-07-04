@@ -18,7 +18,7 @@ from transformers import (AutoModel, AutoModelForSequenceClassification,
                           AutoTokenizer, Trainer, TrainingArguments,
                           TrainerCallback)
 
-from preprocess import clean_text, read_data
+from preprocess import clean_text, read_data, read_clean_data
 import logging
 
 s3_client = boto3.client('s3')
@@ -42,9 +42,19 @@ RANDOM_SEED = 913
 
 
 def load_dataset(file_path: str) -> pd.DataFrame:
-    """Load and clean the review dataset from ``file_path``."""
+    """Load the review dataset from ``file_path``.
 
-    df = read_data(file_path)
+    If ``file_path`` points to raw data containing a ``text`` column, the
+    data will be cleaned using :func:`preprocess.read_data`. If the file
+    already contains ``clean_text`` it is loaded directly via
+    :func:`preprocess.read_clean_data`.
+    """
+
+    preview = pd.read_csv(file_path, nrows=1)
+    if "text" in preview.columns:
+        df = read_data(file_path)
+    else:
+        df = read_clean_data(file_path)
     df = df.dropna(subset=["human_tag"])
     return df
 
