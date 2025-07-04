@@ -95,7 +95,12 @@ def ensure_surrounding_quotes(text: str) -> str:
 
 def read_data(filepath):
     """Read the CSV from disk."""
-    df = pd.read_csv(filepath, delimiter=',')
+    df = pd.read_csv(
+        filepath,
+        delimiter=',',
+        quoting=csv.QUOTE_NONE,
+        escapechar='\\',
+    )
     # Drop optional metadata columns if they exist
     for col in ["doc_id", "date", "title"]:
         if col in df.columns:
@@ -113,7 +118,12 @@ def read_clean_data(filepath: str) -> pd.DataFrame:
     and ``human_tag`` as produced by ``preprocess.py``.
     """
 
-    df = pd.read_csv(filepath, delimiter=',')
+    df = pd.read_csv(
+        filepath,
+        delimiter=',',
+        quoting=csv.QUOTE_NONE,
+        escapechar='\\',
+    )
     required_columns = {"clean_text", "star_rating", "human_tag"}
     missing = required_columns - set(df.columns)
     if missing:
