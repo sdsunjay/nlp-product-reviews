@@ -70,7 +70,7 @@ def upload_directory_to_s3(bucket_name, directory_path, s3_folder):
             s3_path = os.path.join(s3_folder, relative_path)
             try:
                 s3_client.upload_file(local_path, bucket_name, s3_path)
-                print(f"Uploaded file {local_path} to s3://{bucket_name}/{s3_path}: {e}")
+                print(f"Uploaded file {local_path} to s3://{bucket_name}/{s3_path}")
             except Exception as e:
                 print(f"Error uploading {local_path} to s3://{bucket_name}/{s3_path}: {e}")
 
