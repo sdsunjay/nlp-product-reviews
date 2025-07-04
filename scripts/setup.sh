@@ -13,17 +13,17 @@ echo "export TMPDIR=/home/ubuntu/tmp"
 export TMPDIR=/home/ubuntu/tmp
 echo "sudo apt update && sudo apt upgrade -y"
 sudo apt update && sudo apt upgrade -y
-echo "sudo apt-get install python3-dev python3-pip libxml2-dev libxslt1-dev zlib1g-dev g++ virtualenv"
-sudo apt-get install python3-dev python3-pip libxml2-dev libxslt1-dev zlib1g-dev g++ virtualenv
+echo "sudo apt-get install python3.12 python3.12-dev python3-pip libxml2-dev libxslt1-dev zlib1g-dev g++ virtualenv"
+sudo apt-get install python3.12 python3.12-dev python3-pip libxml2-dev libxslt1-dev zlib1g-dev g++ virtualenv
 echo "sudo apt autoremove -y"
 sudo apt autoremove -y
 read -p "Press enter to continue"
 echo "curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py"
 curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
-echo "sudo python3 get-pip.py"
-sudo python3 get-pip.py
-echo "virtualenv -p python3 nlp_product_reviews"
-virtualenv -p python3 nlp_product_reviews
+echo "sudo python3.12 get-pip.py"
+sudo python3.12 get-pip.py
+echo "virtualenv -p python3.12 nlp_product_reviews"
+virtualenv -p python3.12 nlp_product_reviews
 echo "source nlp_product_reviews/bin/activate"
 source nlp_product_reviews/bin/activate
 echo "cd nlp_product_reviews"
