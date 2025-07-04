@@ -1,6 +1,6 @@
 # Repo guidelines for model-training scripts
 
-This repository contains scripts for training BERT-based classifiers on product reviews.
+This repository contains scripts for training transformer-based classifiers on product reviews.
 
 ## Ignore these files
 The following files are experimental and should be ignored when modifying or analysing the code. Avoid referencing or editing them unless explicitly instructed.
