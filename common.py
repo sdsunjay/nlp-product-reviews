@@ -27,7 +27,7 @@ def read_data(filepath: str) -> pd.DataFrame:
 
 def get_dataframe(
     training_filepath: str = "data/clean_training1.csv",
-    sample_frac: float = 1.0,
+    sample_frac: float = 1.0
 ) -> pd.DataFrame:
     """Return a cleaned ``DataFrame`` from ``training_filepath``.
 
