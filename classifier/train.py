@@ -1,10 +1,15 @@
-from common import getDataFrame, tokenizeText1
+from common import tokenizeText1
+
+import os
+import sys
+sys.path.append(os.path.dirname(__file__))
+import bert_model_training
 
 from datetime import datetime
 
 import numpy as np
 import torch
-import transformers as ppb  # pytorch transformers
+from transformers import AutoTokenizer, AutoModel, AutoModelForSequenceClassification
 # Training the model and Testing Accuracy on Validation data
 from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.model_selection import cross_val_score
@@ -32,10 +37,7 @@ from sklearn.svm import LinearSVC
 from sklearn.linear_model import RidgeClassifier, SGDClassifier, Perceptron, PassiveAggressiveClassifier
 from sklearn.neighbors import KNeighborsClassifier
 
-from pytorch_pretrained_bert import BertTokenizer
-
 import pickle
-import string
 
 from sklearn.metrics import average_precision_score
 from sklearn.metrics import accuracy_score
@@ -217,17 +219,18 @@ def main():
     begin_time_main = datetime.now()
     print("Begin time: ", begin_time_main.strftime("%m/%d/%Y, %H:%M:%S"))
 
-    df = getDataFrame()
+    df = bert_model_training.load_dataset(bert_model_training.PATH_TO_TRAINING_CSV)
+    labels = df['human_tag']
 
-    # split into training, validation, and test sets
-    training, test = np.array_split(df.head(200), 2)
-    labels = training['human_tag']
-
-    # When we have more time
-    # model_class, tokenizer_class, pretrained_weights = (ppb.BertModel, ppb.BertTokenizer, 'bert-large-uncased')
-    # model_class, tokenizer_class, pretrained_weights = (ppb.RobertaModel, ppb.DistilBertTokenizer, 'distilbert-base-uncased')
-    model_class, tokenizer_class, pretrained_weights = (ppb.DistilBertModel, ppb.DistilBertTokenizer, 'distilbert-base-uncased')
-    features  = tokenizeText1(training, labels, 'clean_text', model_class, tokenizer_class, pretrained_weights)
+    pretrained_weights = 'allenai/longformer-base-4096'
+    features = tokenizeText1(
+        df,
+        labels,
+        'clean_text',
+        AutoModel,
+        AutoTokenizer,
+        pretrained_weights,
+    )
 
 
     end_time = datetime.now()
@@ -235,6 +238,20 @@ def main():
     print("End time Duration: " + str(end_time - begin_time_main))
 
     trainClassifiers(features, labels)
+
+    tokenizer = AutoTokenizer.from_pretrained(pretrained_weights)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        pretrained_weights,
+        num_labels=2,
+    ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+
+    bert_model_training.train_model(
+        df,
+        tokenizer,
+        model,
+        pretrained_weights,
+        bert_model_training.NUM_EPOCHS,
+    )
 
 if __name__ == "__main__":
     main()
