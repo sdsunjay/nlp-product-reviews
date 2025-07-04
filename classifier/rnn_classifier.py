@@ -8,7 +8,7 @@ from datetime import datetime
 from sklearn.model_selection import train_test_split
 from sklearn.utils import shuffle
 
-from common import getDataFrame
+from common import getDataFrame, strip_outer_quotes
 
 BATCH_SIZE = 64 # 32
 TRAIN_EPOCHS = 15
@@ -190,6 +190,7 @@ def main():
     print("Begin time: ", begin_time_main.strftime("%m/%d/%Y, %H:%M:%S"))
 
     df = getDataFrame("data/24_04_24_21_01_clean_training.csv")
+    df["clean_text"] = df["clean_text"].map(strip_outer_quotes)
     print(df.head())
     df = df.drop(['star_rating'], axis=1)
     df.columns = ['clean_text', 'human_tag']

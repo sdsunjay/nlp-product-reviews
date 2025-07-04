@@ -13,6 +13,13 @@ import numpy as np
 import pandas as pd
 import torch
 
+def strip_outer_quotes(text: str) -> str:
+    """Remove leading and trailing double quotes from ``text`` if present."""
+
+    if isinstance(text, str) and text.startswith('"') and text.endswith('"'):
+        return text[1:-1]
+    return text
+
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
