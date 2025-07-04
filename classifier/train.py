@@ -240,7 +240,7 @@ def main():
 
     end_time = datetime.now()
     print("End time: ", end_time.strftime("%m/%d/%Y, %H:%M:%S"))
-    print("End time Duration: " + str(end_time - begin_time_main))
+    print("Duration: " + str(end_time - begin_time_main))
 
     trainClassifiers(features, labels)
 

@@ -78,16 +78,37 @@ def clean_text(text):
     fixed_text = ftfy.fix_text(translated_text)
     cleanr = re.compile('<.*?>|&([a-z0-9]+|#[0-9]{1,6}|#x[0-9a-f]{1,6});')
     text = cleanr.sub('', fixed_text.strip())
-    return remove_stop_words(unicodedata.normalize('NFC', text))
+    stop_words_removed = remove_stop_words(unicodedata.normalize('NFC', text))
+    return stop_words_removed
 
 def read_data(filepath):
     """Read the CSV from disk."""
     df = pd.read_csv(filepath, delimiter=',')
-    # pandas drop columns using list of column names
-    df = df.drop(['doc_id', 'date', 'title'], axis=1)
+    # Drop optional metadata columns if they exist
+    for col in ["doc_id", "date", "title"]:
+        if col in df.columns:
+            df = df.drop(columns=[col])
     print('Cleaning text')
     df["clean_text"] = df['text'].apply(clean_text)
     print('Number of rows in dataframe: ' + str(len(df.index)))
+    return df
+
+
+def read_clean_data(filepath: str) -> pd.DataFrame:
+    """Read a CSV containing already cleaned reviews.
+
+    The file is expected to contain the columns ``clean_text``, ``star_rating``,
+    and ``human_tag`` as produced by ``preprocess.py``.
+    """
+
+    df = pd.read_csv(filepath, delimiter=',')
+    required_columns = {"clean_text", "star_rating", "human_tag"}
+    missing = required_columns - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"Missing required columns {sorted(missing)} in {filepath}"
+        )
+    print(f"Loaded {len(df.index)} rows from {filepath}")
     return df
 
 def main():
@@ -111,7 +132,7 @@ def main():
     current_time = now.strftime("%y_%m_%d_%H_%M")
     df = read_data(training_filepath)
     header = ["clean_text", "star_rating", "human_tag"]
-    output_path = f'data/{current_time}_clean_training.csv'
+    output_path = './data/25_07_04_11_18_clean_training.csv'
     print(f"Outputing to {output_path}")
     df.to_csv(output_path, columns = header, index=False)
 

@@ -80,10 +80,11 @@ def main():
     else:
         print('Testing file not found in the app path.')
         exit()
+
     df = read_data(testing_filepath)
 
     model = BertForSequenceClassification.from_pretrained('./my_saved_model_directory/')
-tokenizer = BertTokenizer.from_pretrained('./my_saved_model_directory/')
+    tokenizer = BertTokenizer.from_pretrained('./my_saved_model_directory/')
 
     filepaths = [ 'MLP10','MLP3','MLP5','XGB']
 
