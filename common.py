@@ -84,37 +84,112 @@ def padding(tokenized: Iterable[Iterable[int]]) -> np.ndarray:
     padded = np.array([list(seq) + [0] * (max_len - len(seq)) for seq in sequences])
     return padded
 
-def tokenize_text(
-    df: pd.DataFrame,
-    labels: Optional[Iterable[int]],
-    text_column_name: str,
-    model_class,
-    tokenizer_class,
-    pretrained_weights: str,
-) -> np.ndarray:
-    """Tokenize ``text_column_name`` and convert to embeddings using ``model_class``."""
+# --- Core Encoding Logic ---
 
-    start = datetime.now()
-    logger.info("Tokenizing column '%s'", text_column_name)
+def create_embeddings(
+    df: pd.DataFrame, text_column_name: str, model_name: str
+) -> Dict[str, torch.Tensor]:
+    """
+    Tokenizes a text column in a DataFrame and converts it to contextual embeddings.
+
+    This function loads a specified pre-trained model, processes each sentence,
+    handles long texts via chunking, and returns a dictionary of embeddings.
+    """
+    start_time = datetime.now()
+    print(f"Starting embedding generation with model '{model_name}'...")
 
     try:
-        model = model_class.from_pretrained(pretrained_weights)
-        tokenizer = tokenizer_class.from_pretrained(pretrained_weights, do_lower_case=True)
-        model.resize_token_embeddings(len(tokenizer))
+        # Load Model and Tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
+        max_length = model.config.max_position_embeddings
+        print(f"Model and tokenizer loaded. Max sequence length: {max_length}")
 
-        tokenized = df[text_column_name].apply(
-            lambda x: tokenizer.encode(x, add_special_tokens=True, max_length=511)
-        )
+        # Extract sentences from DataFrame
+        if text_column_name not in df.columns:
+            raise ValueError(f"Column '{text_column_name}' not found in DataFrame.")
+        
+        sentences = df[text_column_name].dropna().astype(str).tolist()
+        embeddings = {}
 
-        padded = padding(tokenized)
-        tensor = create_tensor(padded, model)
-        logger.info("Tokenization finished in %s", datetime.now() - start)
-        return tensor
+        # Process each sentence
+        for i, sentence in enumerate(sentences):
+            print(f"  Processing sentence {i+1}/{len(sentences)}...")
+            input_ids = tokenizer.encode(sentence, add_special_tokens=False)
+
+            if len(input_ids) <= max_length:
+                inputs = tokenizer(sentence, return_tensors="pt", truncation=True, max_length=max_length)
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                embeddings[sentence] = outputs.last_hidden_state
+            else:
+                # Handle long sentences with chunking
+                chunk_size = max_length - 2
+                stride = chunk_size // 2
+                all_chunk_embeddings = []
+                for start in range(0, len(input_ids), stride):
+                    end = start + chunk_size
+                    chunk_ids = input_ids[start:end]
+                    if not chunk_ids:
+                        continue
+                    
+                    chunk_with_special_tokens = [tokenizer.cls_token_id] + chunk_ids + [tokenizer.sep_token_id]
+                    chunk_tensor = torch.tensor([chunk_with_special_tokens])
+                    
+                    with torch.no_grad():
+                        outputs = model(chunk_tensor)
+                    
+                    chunk_embeddings = outputs.last_hidden_state[0, 1:-1, :]
+                    all_chunk_embeddings.append(chunk_embeddings)
+                
+                mean_embedding = torch.cat(all_chunk_embeddings, dim=0).mean(dim=0)
+                embeddings[sentence] = mean_embedding
+
+        print(f"Embedding generation finished in {datetime.now() - start_time}.\n")
+        return embeddings
+
     except Exception as exc:
-        logger.error("Exception while tokenizing: %s", exc)
+        print(f"An error occurred during embedding creation: {exc}", file=sys.stderr)
         traceback.print_exc(file=sys.stdout)
         raise
 
+def run_encoding_pipeline(df: pd.DataFrame, text_column_name: str, model_name: str = "allenai/longformer-base-4096"):
+    """
+    Main pipeline to generate, save, and display embeddings from a DataFrame.
+    """
+    try:
+        # --- Step 1: Generate Encodings ---
+        sentence_embeddings = create_embeddings(df, text_column_name, model_name)
 
-# Backwards compatibility
-tokenizeText1 = tokenize_text
+        # --- Step 2: Save Embeddings to File ---
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H")
+        safe_model_name = model_name.replace('/', '-')
+        output_filename = f"{safe_model_name}_{timestamp}.pt"
+        
+        print(f"Saving embeddings to '{output_filename}'...")
+        torch.save(sentence_embeddings, output_filename)
+        print("Embeddings saved successfully.\n")
+
+        # --- Step 3: Display Results ---
+        print("--- Embedding Results Preview ---")
+        for i, (sentence, embedding) in enumerate(list(sentence_embeddings.items())[:5]): # Preview first 5
+            print("-" * 80)
+            print(f"Result for Sentence {i+1}: '{sentence[:120]}...'")
+            if embedding is None:
+                print("  Status: FAILED")
+                continue
+            
+            print(f"  Status: SUCCESS")
+            print(f"  Shape of output tensor: {embedding.shape}")
+            if len(embedding.shape) > 1:
+                vector_preview = ", ".join([f"{x:.2f}" for x in embedding[0, 0, :5]])
+                print(f"  Sample Vector (first token): [{vector_preview}, ...]")
+            else:
+                vector_preview = ", ".join([f"{x:.2f}" for x in embedding[:5]])
+                print(f"  Averaged Vector: [{vector_preview}, ...]")
+        print("-" * 80 + "\n")
+
+    except Exception as exc:
+        print(f"A critical error occurred in the pipeline: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stdout)
+
