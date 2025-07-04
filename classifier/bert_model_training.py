@@ -6,6 +6,7 @@ import boto3
 import pytz
 
 import numpy as np
+import pandas as pd
 from sklearn.metrics import (accuracy_score, f1_score, roc_auc_score,
                              precision_score, recall_score,
                              confusion_matrix)
@@ -17,8 +18,7 @@ from transformers import (AutoModel, AutoModelForSequenceClassification,
                           AutoTokenizer, Trainer, TrainingArguments,
                           TrainerCallback)
 
-from preprocess import clean_text
-from common import getDataFrame
+from preprocess import clean_text, read_data
 import logging
 
 s3_client = boto3.client('s3')
@@ -39,6 +39,14 @@ OUTPUT_MODEL_DIR = "models"
 NUM_EXAMPLES = 100
 NUM_EPOCHS = 8
 RANDOM_SEED = 913
+
+
+def load_dataset(file_path: str) -> pd.DataFrame:
+    """Load and clean the review dataset from ``file_path``."""
+
+    df = read_data(file_path)
+    df = df.dropna(subset=["human_tag"])
+    return df
 
 
 class ReviewDataset(Dataset):
@@ -343,7 +351,9 @@ def main():
 
     print(f"This system has {num_gpus} GPUs.")
     # Load data
-    df = getDataFrame(PATH_TO_TRAINING_CSV)
+    df = load_dataset(PATH_TO_TRAINING_CSV)
+    # Optionally preview embeddings for debugging
+    generate_encodings(PATH_TO_TRAINING_CSV)
     # df = df.head(NUM_EXAMPLES)
     # Sample output:
     # id, text, star rating, label
