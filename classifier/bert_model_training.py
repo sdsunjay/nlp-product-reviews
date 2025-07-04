@@ -107,68 +107,111 @@ class UploadToS3Callback(TrainerCallback):
         print(f"Uploaded epoch {state.epoch} checkpoint to S3")
 
 
-def generate_encodings(file_path: str) -> None:
-    """Generate contextual embeddings for sentences in ``file_path`` using Longformer."""
+def generate_encodings(sentences, model, tokenizer):
+    """
+    Generates contextual embeddings for a list of sentences.
 
-    print("Loading Longformer model and tokenizer ('allenai/longformer-base-4096')...")
-    model_name = "allenai/longformer-base-4096"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name)
+    Args:
+        sentences (list[str]): A list of sentences to encode.
+        model: The pre-trained transformer model.
+        tokenizer: The pre-trained tokenizer.
+
+    Returns:
+        dict: A dictionary mapping each sentence to its embedding tensor.
+    """
+    print("Generating embeddings for all sentences...")
+    start_time = datetime.now()
+    
     max_length = model.config.max_position_embeddings
-    print(f"Model and tokenizer loaded. Max sequence length: {max_length}\n")
+    embeddings = {}
 
-    if not os.path.exists(file_path):
-        print(f"Error: File '{file_path}' not found.")
-        return
+    for sentence in sentences:
+        try:
+            input_ids = tokenizer.encode(sentence, add_special_tokens=False)
 
-    print(f"Reading and cleaning sentences from '{file_path}'...")
-    with open(file_path, "r") as f:
-        sentences = [line.strip() for line in f.readlines() if line.strip()]
-
-    cleaned_sentences = [clean_text(s) for s in sentences]
-    print("Sentences cleaned.\n")
-
-    for i, sentence in enumerate(cleaned_sentences):
-        print("-" * 80)
-        print(f"Processing Sentence {i+1} (length: {len(sentence.split())} words)")
-
-        input_ids = tokenizer.encode(sentence, add_special_tokens=False)
-
-        if len(input_ids) <= max_length:
-            inputs = tokenizer(sentence, return_tensors="pt", truncation=True, max_length=max_length)
-            tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
-            with torch.no_grad():
-                outputs = model(**inputs)
-            last_hidden_state = outputs.last_hidden_state
-            print(f"Shape of output tensor: {last_hidden_state.shape}")
-            print("Embeddings generated for each token:\n")
-            for j, token in enumerate(tokens):
-                token_embedding = last_hidden_state[0, j, :]
-                vector_preview = ", ".join([f"{x:.2f}" for x in token_embedding[:5]])
-                print(f"  Token: {token:<15} | Vector (first 5 of 768 dims): [{vector_preview}, ...]")
-        else:
-            print(f"Sentence is too long ({len(input_ids)} tokens), even for Longformer. Applying chunking strategy.")
-            chunk_size = max_length - 2
-            stride = chunk_size // 2
-            all_chunk_embeddings = []
-            for start in range(0, len(input_ids), stride):
-                end = start + chunk_size
-                chunk_ids = input_ids[start:end]
-                if not chunk_ids:
-                    continue
-                chunk_with_special_tokens = [tokenizer.cls_token_id] + chunk_ids + [tokenizer.sep_token_id]
-                chunk_tensor = torch.tensor([chunk_with_special_tokens])
+            if len(input_ids) <= max_length:
+                inputs = tokenizer(sentence, return_tensors="pt", truncation=True, max_length=max_length)
                 with torch.no_grad():
-                    outputs = model(chunk_tensor)
-                chunk_embeddings = outputs.last_hidden_state[0, 1:-1, :]
-                all_chunk_embeddings.append(chunk_embeddings)
-            mean_embedding = torch.cat(all_chunk_embeddings, dim=0).mean(dim=0)
-            print("Generated a single averaged embedding for the very long sentence.")
-            print(f"Shape of final averaged tensor: {mean_embedding.shape}")
-            vector_preview = ", ".join([f"{x:.2f}" for x in mean_embedding[:5]])
-            print(f"Vector (first 5 of 768 dims): [{vector_preview}, ...]")
+                    outputs = model(**inputs)
+                embeddings[sentence] = outputs.last_hidden_state
+            else:
+                print(f"Sentence with {len(sentence.split())} words is too long ({len(input_ids)} tokens). Applying chunking...")
+                chunk_size = max_length - 2
+                stride = chunk_size // 2
+                all_chunk_embeddings = []
+                for start in range(0, len(input_ids), stride):
+                    end = start + chunk_size
+                    chunk_ids = input_ids[start:end]
+                    if not chunk_ids:
+                        continue
+                    chunk_with_special_tokens = [tokenizer.cls_token_id] + chunk_ids + [tokenizer.sep_token_id]
+                    chunk_tensor = torch.tensor([chunk_with_special_tokens])
+                    with torch.no_grad():
+                        outputs = model(chunk_tensor)
+                    chunk_embeddings = outputs.last_hidden_state[0, 1:-1, :]
+                    all_chunk_embeddings.append(chunk_embeddings)
+                mean_embedding = torch.cat(all_chunk_embeddings, dim=0).mean(dim=0)
+                embeddings[sentence] = mean_embedding
+        except Exception as exc:
+            print(f"Error processing sentence: '{sentence[:100]}...'", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            embeddings[sentence] = None
 
+    print(f"Finished generating embeddings in {datetime.now() - start_time}.\n")
+    return embeddings
+
+
+def run_encoding_pipeline(df, text_column_name, model_name="allenai/longformer-base-4096"):
+    """
+    Main pipeline to load model, read from a DataFrame, generate embeddings, save, and print results.
+    """
+    try:
+        print(f"Loading model and tokenizer ('{model_name}')...")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
+        print("Model and tokenizer loaded.\n")
+
+        if text_column_name not in df.columns:
+            print(f"Error: Column '{text_column_name}' not found in the DataFrame.", file=sys.stderr)
+            return
+
+        sentences = df[text_column_name].dropna().astype(str).tolist()
+        
+        sentence_embeddings = generate_encodings(sentences, model, tokenizer)
+
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H")
+        safe_model_name = model_name.replace('/', '-')
+        output_filename = f"{safe_model_name}_{timestamp}.pt"
+        
+        print(f"Saving embeddings to '{output_filename}'...")
+        torch.save(sentence_embeddings, output_filename)
+        print("Embeddings saved successfully.\n")
+
+        print("--- Embedding Results ---")
+        for i, (sentence, embedding) in enumerate(sentence_embeddings.items()):
+            print("-" * 80)
+            print(f"Result for Sentence {i+1}: '{sentence[:120]}...'")
+            if embedding is None:
+                print("  Status: FAILED")
+                continue
+            print(f"  Status: SUCCESS")
+            print(f"  Shape of output tensor: {embedding.shape}")
+            if len(embedding.shape) > 1:
+                tokens = tokenizer.convert_ids_to_tokens(tokenizer.encode(sentence, truncation=True, max_length=model.config.max_position_embeddings))
+                for j, token in enumerate(tokens):
+                    token_embedding = embedding[0, j, :]
+                    vector_preview = ", ".join([f"{x:.2f}" for x in token_embedding[:5]])
+                    print(f"    Token: {token:<15} | Vector (first 5 of 768 dims): [{vector_preview}, ...]")
+            else:
+                vector_preview = ", ".join([f"{x:.2f}" for x in embedding[:5]])
+                print(f"  Averaged Vector (first 5 of 768 dims): [{vector_preview}, ...]")
         print("-" * 80 + "\n")
+
+    except Exception as exc:
+        print(f"A critical error occurred in the pipeline: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stdout)
+
+
 def output_eval_results(eval_result, model, model_name):
 
     # Add additional information
@@ -364,8 +407,9 @@ def main():
     print(f"This system has {num_gpus} GPUs.")
     # Load data
     df = load_dataset(PATH_TO_TRAINING_CSV)
-    # Optionally preview embeddings for debugging
-    generate_encodings(PATH_TO_TRAINING_CSV)
+ 
+    # The pipeline now expects the 'clean_text' column created by load_dataset
+    # run_encoding_pipeline(df=reviews_df, text_column_name='clean_text')
     # df = df.head(NUM_EXAMPLES)
     # Sample output:
     # id, text, star rating, label
