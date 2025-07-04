@@ -1,22 +1,23 @@
 import json
 import os
 from datetime import datetime
-import pytz
+
 import boto3
+import pytz
 
 import numpy as np
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, precision_score, recall_score, confusion_matrix
+from sklearn.metrics import (accuracy_score, f1_score, roc_auc_score,
+                             precision_score, recall_score,
+                             confusion_matrix)
 from sklearn.model_selection import train_test_split
 
 import torch
-from torch.utils.data import Dataset, DataLoader
-from transformers import (AutoModelForSequenceClassification, AutoTokenizer,
-                          BertForSequenceClassification,
-                          BertTokenizer,
-                          Trainer,
-                          TrainingArguments,
+from torch.utils.data import Dataset
+from transformers import (AutoModel, AutoModelForSequenceClassification,
+                          AutoTokenizer, Trainer, TrainingArguments,
                           TrainerCallback)
 
+from preprocess import clean_text
 from common import getDataFrame
 import logging
 
@@ -70,7 +71,7 @@ def upload_directory_to_s3(bucket_name, directory_path, s3_folder):
             s3_path = os.path.join(s3_folder, relative_path)
             try:
                 s3_client.upload_file(local_path, bucket_name, s3_path)
-                print(f"Uploaded file {local_path} to s3://{bucket_name}/{s3_path}: {e}")
+                print(f"Uploaded file {local_path} to s3://{bucket_name}/{s3_path}")
             except Exception as e:
                 print(f"Error uploading {local_path} to s3://{bucket_name}/{s3_path}: {e}")
 
@@ -84,6 +85,70 @@ class UploadToS3Callback(TrainerCallback):
         # Upload the checkpoint directory to S3
         upload_directory_to_s3(BUCKET_NAME, checkpoint_directory, s3_folder)
         print(f"Uploaded epoch {state.epoch} checkpoint to S3")
+
+
+def generate_encodings(file_path: str) -> None:
+    """Generate contextual embeddings for sentences in ``file_path`` using Longformer."""
+
+    print("Loading Longformer model and tokenizer ('allenai/longformer-base-4096')...")
+    model_name = "allenai/longformer-base-4096"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModel.from_pretrained(model_name)
+    max_length = model.config.max_position_embeddings
+    print(f"Model and tokenizer loaded. Max sequence length: {max_length}\n")
+
+    if not os.path.exists(file_path):
+        print(f"Error: File '{file_path}' not found.")
+        return
+
+    print(f"Reading and cleaning sentences from '{file_path}'...")
+    with open(file_path, "r") as f:
+        sentences = [line.strip() for line in f.readlines() if line.strip()]
+
+    cleaned_sentences = [clean_text(s) for s in sentences]
+    print("Sentences cleaned.\n")
+
+    for i, sentence in enumerate(cleaned_sentences):
+        print("-" * 80)
+        print(f"Processing Sentence {i+1} (length: {len(sentence.split())} words)")
+
+        input_ids = tokenizer.encode(sentence, add_special_tokens=False)
+
+        if len(input_ids) <= max_length:
+            inputs = tokenizer(sentence, return_tensors="pt", truncation=True, max_length=max_length)
+            tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
+            with torch.no_grad():
+                outputs = model(**inputs)
+            last_hidden_state = outputs.last_hidden_state
+            print(f"Shape of output tensor: {last_hidden_state.shape}")
+            print("Embeddings generated for each token:\n")
+            for j, token in enumerate(tokens):
+                token_embedding = last_hidden_state[0, j, :]
+                vector_preview = ", ".join([f"{x:.2f}" for x in token_embedding[:5]])
+                print(f"  Token: {token:<15} | Vector (first 5 of 768 dims): [{vector_preview}, ...]")
+        else:
+            print(f"Sentence is too long ({len(input_ids)} tokens), even for Longformer. Applying chunking strategy.")
+            chunk_size = max_length - 2
+            stride = chunk_size // 2
+            all_chunk_embeddings = []
+            for start in range(0, len(input_ids), stride):
+                end = start + chunk_size
+                chunk_ids = input_ids[start:end]
+                if not chunk_ids:
+                    continue
+                chunk_with_special_tokens = [tokenizer.cls_token_id] + chunk_ids + [tokenizer.sep_token_id]
+                chunk_tensor = torch.tensor([chunk_with_special_tokens])
+                with torch.no_grad():
+                    outputs = model(chunk_tensor)
+                chunk_embeddings = outputs.last_hidden_state[0, 1:-1, :]
+                all_chunk_embeddings.append(chunk_embeddings)
+            mean_embedding = torch.cat(all_chunk_embeddings, dim=0).mean(dim=0)
+            print("Generated a single averaged embedding for the very long sentence.")
+            print(f"Shape of final averaged tensor: {mean_embedding.shape}")
+            vector_preview = ", ".join([f"{x:.2f}" for x in mean_embedding[:5]])
+            print(f"Vector (first 5 of 768 dims): [{vector_preview}, ...]")
+
+        print("-" * 80 + "\n")
 def output_eval_results(eval_result, model, model_name):
 
     # Add additional information
@@ -147,40 +212,6 @@ def compute_metrics(pred):
 
     return metrics
 
-def padding(tokenized):
-    begin_time_main = datetime.now()
-    print("Padding begin time: ", begin_time_main.strftime("%m/%d/%Y, %H:%M:%S"))
-    print(type(tokenized))
-    print('tokenized length: ' + str(len(tokenized)))
-    max_len = 512
-    zeros = np.zeros((512,), dtype=int)
-    index = 0
-    for item in tokenized:
-        zeros[index] = 1
-        index = index + 1
-        if index == max_len:
-            break
-    print('Padding end time: ' + str(datetime.now() - begin_time_main))
-    return zeros
-
-def createTensor(padded, model):
-    begin_time_main = datetime.now()
-    print("Create Tensor begin time: ", begin_time_main.strftime("%m/%d/%Y, %H:%M:%S"))
-    # input_ids = torch.from_numpy(padded)
-    attention_mask = np.where(padded != 0, 1, 0)
-    attention_mask.shape
-    input_ids = torch.tensor(padded)
-    attention_mask = torch.tensor(attention_mask)
-    # attention_mask = torch.from_numpy(attention_mask)
-
-    with torch.no_grad():
-        # last_hidden_states = model(input_ids)
-        last_hidden_states = model(input_ids, attention_mask=attention_mask)
-        # Slice the output for the first position for all the sequences,
-        # take all hidden unit outputs
-        features = last_hidden_states[0][:,0,:].numpy()
-        print('Create Tensor end time: ' + str(datetime.now() - begin_time_main))
-        return features
 
 def split_data(df):
     """
@@ -225,7 +256,12 @@ def tokenize_data(texts, tokenizer):
     :param tokenizer: The tokenizer to use.
     :return: The tokenized texts.
     """
-    return tokenizer(texts.tolist(), truncation=True, padding=True)
+    return tokenizer(
+        texts.tolist(),
+        truncation=True,
+        padding=True,
+        max_length=tokenizer.model_max_length,
+    )
 
 def create_dataset(encodings, labels, star_ratings):
     """
@@ -314,13 +350,16 @@ def main():
     # 31679,mine almost burned house,1,1
 
     # for model_name in ['bert-base-uncased-emotion', 'bert-large-uncased']:
-    for model_name in ['bert-large-uncased']:
-        # Initialize the BERT tokenizer
-        tokenizer = BertTokenizer.from_pretrained(model_name)
+    for model_name in ['allenai/longformer-base-4096']:
+        # Initialize tokenizer for Longformer
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         num_labels = 2
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print('Using device:', device)
-        model = (AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_labels).to(device))
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            num_labels=num_labels,
+        ).to(device)
         train_model(df, tokenizer, model, model_name, NUM_EPOCHS)
 
     # Log message after training completes
