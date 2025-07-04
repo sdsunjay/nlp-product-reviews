@@ -44,10 +44,15 @@ from sklearn.metrics import accuracy_score
 from sklearn.metrics import f1_score
 
 def save_model(model, filename):
-    filename = 'model/{}.sav'.format(filename)
-    print('Saving model to ' + filename)
-    print('Skipping saving')
-    # pickle.dump(model, open(filename, 'wb'))
+    """Persist a trained model to ``models/<filename>.sav``."""
+
+    directory = "models"
+    os.makedirs(directory, exist_ok=True)
+
+    file_path = os.path.join(directory, f"{filename}.sav")
+    print("Saving model to " + file_path)
+    with open(file_path, "wb") as f:
+        pickle.dump(model, f)
 
 def load_model(filename):
     # load the model from disk
