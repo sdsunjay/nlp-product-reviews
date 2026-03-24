@@ -1,7 +1,10 @@
+# main.py
+import csv
 import json
 import os
+import re
+import sys
 from datetime import datetime
-import csv
 
 try:
     import boto3  # type: ignore
@@ -19,49 +22,66 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import (accuracy_score, f1_score, roc_auc_score,
                              precision_score, recall_score,
-                             confusion_matrix)
+                             confusion_matrix, classification_report)
 from sklearn.model_selection import train_test_split
 
 import torch
+import torch.nn as nn
 from torch.utils.data import Dataset
-from transformers import (AutoModel, AutoModelForSequenceClassification,
+from transformers import (AutoModelForSequenceClassification,
                           AutoTokenizer, Trainer, TrainingArguments,
                           TrainerCallback)
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import config
+
 from preprocess import clean_text, read_data, read_clean_data
 from common import strip_outer_quotes
+
 import logging
-import sys
-import traceback
 
-BUCKET_NAME = 'dsunjay-bucket'
 
-# Configure logging
-logging.basicConfig(filename='results/training_log.txt',
-                    filemode='a',  # 'w' to write from scratch, 'a' to append
+# ---------------------------------------------------------------------------
+# Data helpers
+# ---------------------------------------------------------------------------
+
+def prepend_star_rating(text: str, star_rating) -> str:
+    """Prepend the star rating to the review text so the model can use it."""
+    try:
+        stars = int(star_rating)
+    except (ValueError, TypeError):
+        stars = 0
+    return f"Rating: {stars} stars. {text}"
+
+
+# ---------------------------------------------------------------------------
+# AWS / logging setup
+# ---------------------------------------------------------------------------
+
+BUCKET_NAME = config.S3_BUCKET_NAME
+
+os.makedirs(config.RESULTS_DIR, exist_ok=True)
+logging.basicConfig(filename=os.path.join(config.RESULTS_DIR, 'training_log.txt'),
+                    filemode='a',
                     level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Example to log some info
 logging.info("Training process starts")
 
-PATH_TO_TRAINING_CSV = 'data/clean_training3.csv'
-OUTPUT_MODEL_DIR = "models"
+PATH_TO_TRAINING_CSV = config.PATH_TO_TRAINING_CSV
+OUTPUT_MODEL_DIR = config.OUTPUT_MODEL_DIR
 
-NUM_EXAMPLES = 100
-NUM_EPOCHS = 8
-RANDOM_SEED = 913
+NUM_EXAMPLES = config.NUM_EXAMPLES
+NUM_EPOCHS = config.NUM_EPOCHS
+RANDOM_SEED = config.RANDOM_SEED
 
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
 
 def load_dataset(file_path: str) -> pd.DataFrame:
-    """Load the review dataset from ``file_path``.
-
-    If ``file_path`` points to raw data containing a ``text`` column, the
-    data will be cleaned using :func:`preprocess.read_data`. If the file
-    already contains ``clean_text`` it is loaded directly via
-    :func:`preprocess.read_clean_data`.
-    """
-
+    """Load the review dataset from ``file_path``."""
     preview = pd.read_csv(
         file_path,
         nrows=1,
@@ -78,32 +98,57 @@ def load_dataset(file_path: str) -> pd.DataFrame:
 
 
 class ReviewDataset(Dataset):
-    def __init__(self, encodings, labels, star_ratings):
+    def __init__(self, encodings, labels):
         self.encodings = encodings
         self.labels = labels
-        self.star_ratings = star_ratings.reset_index(drop=True)  # Reset index here
 
     def __getitem__(self, idx):
         item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
         item['labels'] = torch.tensor(self.labels[idx])
-        item['star_rating'] = torch.tensor(self.star_ratings[idx])
         return item
 
     def __len__(self):
         return len(self.labels)
 
-def upload_directory_to_s3(bucket_name, directory_path, s3_folder):
-    """
-    Upload a whole directory to an S3 bucket
 
-    :param bucket_name: Bucket to upload to
-    :param directory_path: Directory to upload
-    :param s3_folder: Folder path in the S3 bucket
-    """
+# ---------------------------------------------------------------------------
+# Weighted Trainer (class-imbalance aware)
+# ---------------------------------------------------------------------------
+
+class WeightedTrainer(Trainer):
+    """Trainer subclass that applies class weights to the cross-entropy loss."""
+
+    def __init__(self, class_weights=None, **kwargs):
+        super().__init__(**kwargs)
+        if class_weights is not None:
+            self.class_weights = torch.tensor(class_weights, dtype=torch.float)
+        else:
+            self.class_weights = None
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        logits = outputs.logits
+
+        if self.class_weights is not None:
+            weights = self.class_weights.to(logits.device)
+            loss_fn = nn.CrossEntropyLoss(weight=weights)
+        else:
+            loss_fn = nn.CrossEntropyLoss()
+
+        loss = loss_fn(logits, labels)
+        return (loss, outputs) if return_outputs else loss
+
+
+# ---------------------------------------------------------------------------
+# S3 helpers
+# ---------------------------------------------------------------------------
+
+def upload_directory_to_s3(bucket_name, directory_path, s3_folder):
+    """Upload a whole directory to an S3 bucket."""
     if s3_client is None:
         logging.warning("boto3 not available; skipping S3 upload")
         return
-
     for root, _, files in os.walk(directory_path):
         for file in files:
             local_path = os.path.join(root, file)
@@ -111,131 +156,25 @@ def upload_directory_to_s3(bucket_name, directory_path, s3_folder):
             s3_path = os.path.join(s3_folder, relative_path)
             try:
                 s3_client.upload_file(local_path, bucket_name, s3_path)
-                print(f"Uploaded file {local_path} to s3://{bucket_name}/{s3_path}")
+                print(f"Uploaded {local_path} to s3://{bucket_name}/{s3_path}")
             except Exception as e:
-                print(f"Error uploading {local_path} to s3://{bucket_name}/{s3_path}: {e}")
+                print(f"Error uploading {local_path}: {e}")
+
 
 class UploadToS3Callback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):
-        # Specify your checkpoint directory and the S3 bucket details
         checkpoint_directory = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
         s3_folder = f"results/checkpoints/epoch-{state.epoch}"
-
-
-        # Upload the checkpoint directory to S3
         upload_directory_to_s3(BUCKET_NAME, checkpoint_directory, s3_folder)
         print(f"Uploaded epoch {state.epoch} checkpoint to S3")
 
 
-def generate_encodings(sentences, model, tokenizer):
-    """
-    Generates contextual embeddings for a list of sentences.
-
-    Args:
-        sentences (list[str]): A list of sentences to encode.
-        model: The pre-trained transformer model.
-        tokenizer: The pre-trained tokenizer.
-
-    Returns:
-        dict: A dictionary mapping each sentence to its embedding tensor.
-    """
-    print("Generating embeddings for all sentences...")
-    start_time = datetime.now()
-    
-    max_length = model.config.max_position_embeddings
-    embeddings = {}
-
-    for sentence in sentences:
-        try:
-            input_ids = tokenizer.encode(sentence, add_special_tokens=False)
-
-            if len(input_ids) <= max_length:
-                inputs = tokenizer(sentence, return_tensors="pt", truncation=True, max_length=max_length)
-                with torch.no_grad():
-                    outputs = model(**inputs)
-                embeddings[sentence] = outputs.last_hidden_state
-            else:
-                print(f"Sentence with {len(sentence.split())} words is too long ({len(input_ids)} tokens). Applying chunking...")
-                chunk_size = max_length - 2
-                stride = chunk_size // 2
-                all_chunk_embeddings = []
-                for start in range(0, len(input_ids), stride):
-                    end = start + chunk_size
-                    chunk_ids = input_ids[start:end]
-                    if not chunk_ids:
-                        continue
-                    chunk_with_special_tokens = [tokenizer.cls_token_id] + chunk_ids + [tokenizer.sep_token_id]
-                    chunk_tensor = torch.tensor([chunk_with_special_tokens])
-                    with torch.no_grad():
-                        outputs = model(chunk_tensor)
-                    chunk_embeddings = outputs.last_hidden_state[0, 1:-1, :]
-                    all_chunk_embeddings.append(chunk_embeddings)
-                mean_embedding = torch.cat(all_chunk_embeddings, dim=0).mean(dim=0)
-                embeddings[sentence] = mean_embedding
-        except Exception as exc:
-            print(f"Error processing sentence: '{sentence[:100]}...'", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
-            embeddings[sentence] = None
-
-    print(f"Finished generating embeddings in {datetime.now() - start_time}.\n")
-    return embeddings
-
-
-def run_encoding_pipeline(df, text_column_name, model_name="allenai/longformer-base-4096"):
-    """
-    Main pipeline to load model, read from a DataFrame, generate embeddings, save, and print results.
-    """
-    try:
-        print(f"Loading model and tokenizer ('{model_name}')...")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModel.from_pretrained(model_name)
-        print("Model and tokenizer loaded.\n")
-
-        if text_column_name not in df.columns:
-            print(f"Error: Column '{text_column_name}' not found in the DataFrame.", file=sys.stderr)
-            return
-
-        sentences = df[text_column_name].dropna().astype(str).tolist()
-        
-        sentence_embeddings = generate_encodings(sentences, model, tokenizer)
-
-        timestamp = datetime.now().strftime("%Y-%m-%d-%H")
-        safe_model_name = model_name.replace('/', '-')
-        output_filename = f"{safe_model_name}_{timestamp}.pt"
-        
-        print(f"Saving embeddings to '{output_filename}'...")
-        torch.save(sentence_embeddings, output_filename)
-        print("Embeddings saved successfully.\n")
-
-        print("--- Embedding Results ---")
-        for i, (sentence, embedding) in enumerate(sentence_embeddings.items()):
-            print("-" * 80)
-            print(f"Result for Sentence {i+1}: '{sentence[:120]}...'")
-            if embedding is None:
-                print("  Status: FAILED")
-                continue
-            print(f"  Status: SUCCESS")
-            print(f"  Shape of output tensor: {embedding.shape}")
-            if len(embedding.shape) > 1:
-                tokens = tokenizer.convert_ids_to_tokens(tokenizer.encode(sentence, truncation=True, max_length=model.config.max_position_embeddings))
-                for j, token in enumerate(tokens):
-                    token_embedding = embedding[0, j, :]
-                    vector_preview = ", ".join([f"{x:.2f}" for x in token_embedding[:5]])
-                    print(f"    Token: {token:<15} | Vector (first 5 of 768 dims): [{vector_preview}, ...]")
-            else:
-                vector_preview = ", ".join([f"{x:.2f}" for x in embedding[:5]])
-                print(f"  Averaged Vector (first 5 of 768 dims): [{vector_preview}, ...]")
-        print("-" * 80 + "\n")
-
-    except Exception as exc:
-        print(f"A critical error occurred in the pipeline: {exc}", file=sys.stderr)
-        traceback.print_exc(file=sys.stdout)
-
-
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
 
 def output_eval_results(eval_result, model, model_name):
-
-    # Add additional information
+    """Formats and saves evaluation results."""
     eval_result['model_name'] = model_name
     if pytz is not None:
         est = pytz.timezone('US/Eastern')
@@ -243,220 +182,265 @@ def output_eval_results(eval_result, model, model_name):
     else:
         eval_time = datetime.now().strftime("%Y-%m-%d__%H_%M_%S")
     eval_result['eval_time'] = eval_time
-    # Include model hyperparameters if available
     if hasattr(model.config, 'to_dict'):
         eval_result['model_config'] = model.config.to_dict()
 
-    # Convert the dictionary to a JSON string
     eval_result_json_str = json.dumps(eval_result, indent=4)
-
-    # Print the result
     print(eval_result_json_str)
 
-      # Check if the directory exists, if not, create it
     directory = f'./{OUTPUT_MODEL_DIR}/{model_name}'
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-
-    # Save the result to a file
+    os.makedirs(directory, exist_ok=True)
     with open(f'{directory}/{eval_time}_eval_result.json', 'w') as f:
         f.write(eval_result_json_str)
 
+
 def compute_metrics(pred):
+    """Compute metrics using both argmax and the configured decision threshold."""
     labels = pred.label_ids
-    preds = pred.predictions.argmax(-1)
+    logits = torch.tensor(pred.predictions)
+    probs = torch.nn.functional.softmax(logits, dim=-1).numpy()
+    prob_class1 = probs[:, 1]
 
-    # Calculate metrics
-    acc = accuracy_score(labels, preds)
-    f1 = f1_score(labels, preds, average="weighted")
-    precision = precision_score(labels, preds)
-    recall = recall_score(labels, preds)
+    # Standard argmax predictions
+    preds_argmax = pred.predictions.argmax(-1)
 
-    # Handle cases where ROC AUC cannot be computed
+    # Threshold-based predictions (optimised for recall)
+    threshold = config.DECISION_THRESHOLD
+    preds_threshold = (prob_class1 >= threshold).astype(int)
+
+    # --- Argmax metrics ---
+    acc = accuracy_score(labels, preds_argmax)
+    f1 = f1_score(labels, preds_argmax, average="weighted")
+    precision_1 = precision_score(labels, preds_argmax, zero_division=0)
+    recall_1 = recall_score(labels, preds_argmax, zero_division=0)
+
+    # --- Threshold metrics ---
+    precision_1_thr = precision_score(labels, preds_threshold, zero_division=0)
+    recall_1_thr = recall_score(labels, preds_threshold, zero_division=0)
+    f1_thr = f1_score(labels, preds_threshold, average="weighted")
+
     try:
-        probs = torch.nn.functional.softmax(torch.tensor(pred.predictions), dim=-1) # Compute probabilities
-        auc = roc_auc_score(labels, probs[:, 1])
+        auc = roc_auc_score(labels, prob_class1)
     except ValueError:
         auc = float("NaN")
 
-    # Calculate confusion matrix
-    conf_matrix = confusion_matrix(labels, preds)
-    # Print confusion matrix
-    print("Confusion Matrix:")
-    print(conf_matrix)
+    conf_matrix = confusion_matrix(labels, preds_threshold)
+    print(f"\n--- Threshold={threshold} ---")
+    print(f"Confusion Matrix:\n{conf_matrix}")
+    print(classification_report(labels, preds_threshold, target_names=["safe", "flagged"]))
 
     metrics = {
         "accuracy": acc,
         "f1": f1,
-        "precision": precision,
-        "recall": recall,
+        "precision_class1": precision_1,
+        "recall_class1": recall_1,
         "auc": auc,
+        "threshold": threshold,
+        "threshold_precision_class1": precision_1_thr,
+        "threshold_recall_class1": recall_1_thr,
+        "threshold_f1": f1_thr,
     }
-
-    # Log metrics
     for key, value in metrics.items():
         logging.info(f"{key}: {value}")
-
     return metrics
 
 
+def find_best_threshold(pred, min_recall=0.90):
+    """Find the threshold that maximises F1 while keeping recall >= min_recall."""
+    labels = pred.label_ids
+    probs = torch.nn.functional.softmax(torch.tensor(pred.predictions), dim=-1).numpy()[:, 1]
+
+    best_threshold = 0.5
+    best_f1 = 0
+    for thr in np.arange(0.05, 0.95, 0.05):
+        preds = (probs >= thr).astype(int)
+        rec = recall_score(labels, preds, zero_division=0)
+        if rec >= min_recall:
+            f = f1_score(labels, preds, average="weighted")
+            if f > best_f1:
+                best_f1 = f
+                best_threshold = thr
+
+    print(f"\nOptimal threshold for recall >= {min_recall:.0%}: {best_threshold:.2f} (F1={best_f1:.4f})")
+    return best_threshold
+
+
+# ---------------------------------------------------------------------------
+# Data splitting and tokenisation
+# ---------------------------------------------------------------------------
+
 def split_data(df):
-    """
-    Splits the data into training and validation sets.
-
-    :param df: The dataframe containing the data.
-    :return: The texts, labels, and star ratings for the training and validation sets.
-    """
-    # Drop rows where 'star_rating' is null
-    # TODO: Fix this so we don't drop these rows
+    """Splits data into train/val, prepending star_rating to text."""
     df = df.dropna(subset=['star_rating'])
-
-    # drop index column
     df = df.reset_index(drop=True)
 
-    features = df[['clean_text', 'star_rating']]
-    labels = df['human_tag']
+    # Prepend star rating to review text
+    df["model_input"] = df.apply(
+        lambda row: prepend_star_rating(row["clean_text"], row["star_rating"]),
+        axis=1,
+    )
 
-    # Set a fixed random seed for reproducibility
-    random_seed = RANDOM_SEED
-
-    # Split the data into training and validation sets
-    train_features, val_features, train_labels, val_labels = train_test_split(features, labels, test_size=0.2, random_state=random_seed)
-
-    train_texts = train_features['clean_text']
-    train_star_ratings = train_features['star_rating']
-
-    val_texts = val_features['clean_text']
-    val_star_ratings = val_features['star_rating']
-
+    features = df[['model_input']]
+    labels = df['human_tag'].astype(int)
+    train_features, val_features, train_labels, val_labels = train_test_split(
+        features, labels, test_size=config.TEST_SIZE,
+        random_state=RANDOM_SEED, stratify=labels,
+    )
+    train_texts = train_features['model_input']
+    val_texts = val_features['model_input']
     train_labels = train_labels.reset_index(drop=True)
     val_labels = val_labels.reset_index(drop=True)
-
-    return train_texts, val_texts, train_labels, val_labels, train_star_ratings, val_star_ratings
+    return train_texts, val_texts, train_labels, val_labels
 
 
 def tokenize_data(texts, tokenizer):
-    """
-    Tokenizes the texts using the provided tokenizer.
+    """Tokenize texts one-by-one with truncation and padding."""
+    print(f"Tokenizing {len(texts)} texts (max_length={config.MAX_TOKENS})...")
 
-    :param texts: The texts to tokenize.
-    :param tokenizer: The tokenizer to use.
-    :return: The tokenized texts.
-    """
-    return tokenizer(
-        texts.tolist(),
-        truncation=True,
-        padding=True,
-        max_length=tokenizer.model_max_length,
-    )
+    all_input_ids = []
+    all_attention_mask = []
 
-def create_dataset(encodings, labels, star_ratings):
-    """
-    Creates a dataset from the encodings and labels.
+    for text in texts:
+        if not isinstance(text, str):
+            text = str(text)
+        if len(text) > config.SAFE_CHAR_LIMIT:
+            text = text[:config.SAFE_CHAR_LIMIT]
 
-    :param encodings: The tokenized texts.
-    :param labels: The labels for the texts.
-    :param star_ratings: the star rating for the review.
-    :return: A dataset containing the encodings and labels.
-    """
-    return ReviewDataset(encodings, labels, star_ratings)
+        encoding = tokenizer(
+            text,
+            truncation=True,
+            padding='max_length',
+            max_length=config.MAX_TOKENS,
+        )
+        all_input_ids.append(encoding['input_ids'])
+        all_attention_mask.append(encoding['attention_mask'])
+
+    return {
+        'input_ids': all_input_ids,
+        'attention_mask': all_attention_mask,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+
+def compute_class_weights(labels):
+    """Compute class weights: [weight_class0, weight_class1]."""
+    if config.CLASS_1_WEIGHT > 0:
+        return [1.0, config.CLASS_1_WEIGHT]
+    # Auto-compute from distribution
+    counts = np.bincount(labels)
+    total = len(labels)
+    w0 = total / (2 * counts[0])
+    w1 = total / (2 * counts[1])
+    return [w0, w1]
+
 
 def train_model(df, tokenizer, model, model_name, epochs):
-    """
-    Trains the model on the provided data.
-
-    :param df: The dataframe containing the data.
-    :param tokenizer: The tokenizer to use.
-    :param model: The model to train.
-    :param model_name: The model to train.
-    :param epochs: The number of epochs to train for.
-    """
-    # Assuming df['star_rating'] contains the star ratings
-    train_texts, val_texts, train_labels, val_labels, train_star_ratings, val_star_ratings = split_data(df)
+    """Trains the model on the provided data."""
+    train_texts, val_texts, train_labels, val_labels = split_data(df)
 
     train_encodings = tokenize_data(train_texts, tokenizer)
     val_encodings = tokenize_data(val_texts, tokenizer)
-    train_dataset = create_dataset(train_encodings, train_labels, train_star_ratings)
-    val_dataset = create_dataset(val_encodings, val_labels, val_star_ratings)
-    model.resize_token_embeddings(len(tokenizer))
-    train_batch_size = 8
-    eval_batch_size = 8
+
+    train_dataset = ReviewDataset(train_encodings, train_labels.tolist())
+    val_dataset = ReviewDataset(val_encodings, val_labels.tolist())
+
+    class_weights = compute_class_weights(train_labels.values)
+    print(f"Class weights: [0: {class_weights[0]:.2f}, 1: {class_weights[1]:.2f}]")
+
     training_args = TrainingArguments(
-        output_dir="./results",
+        output_dir=config.RESULTS_DIR,
         num_train_epochs=epochs,
-        learning_rate=2e-5,
-        per_device_train_batch_size=train_batch_size,
-        per_device_eval_batch_size=eval_batch_size,
+        learning_rate=config.LEARNING_RATE,
+        per_device_train_batch_size=config.PER_DEVICE_TRAIN_BATCH_SIZE,
+        per_device_eval_batch_size=config.PER_DEVICE_EVAL_BATCH_SIZE,
+        gradient_accumulation_steps=config.GRADIENT_ACCUMULATION_STEPS,
+        fp16=config.FP16,
         load_best_model_at_end=True,
-        metric_for_best_model="f1",
-        weight_decay=0.01,
-        evaluation_strategy="epoch",
+        metric_for_best_model="recall_class1",
+        greater_is_better=True,
+        weight_decay=config.WEIGHT_DECAY,
+        eval_strategy="epoch",
         save_strategy="epoch",
-        warmup_steps=500)
-    trainer = Trainer(
+        warmup_steps=config.WARMUP_STEPS,
+    )
+
+    trainer = WeightedTrainer(
+        class_weights=class_weights,
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         compute_metrics=compute_metrics,
-        callbacks=[UploadToS3Callback()]
+        callbacks=[UploadToS3Callback()],
     )
 
-
-    # Start training
     trainer.train()
 
-    # Evaluate the model
+    # Find optimal threshold on validation set
+    val_pred = trainer.predict(val_dataset)
+    best_thr = find_best_threshold(val_pred, min_recall=0.90)
+    print(f"Recommended DECISION_THRESHOLD: {best_thr:.2f}")
+
     eval_result = trainer.evaluate()
+    eval_result["recommended_threshold"] = best_thr
 
     try:
-        # Save the final model
-        trainer.save_model(f"./results/model/{model_name}")
+        safe_name = model_name.replace("/", "_")
+        trainer.save_model(f"./results/model/{safe_name}")
         upload_directory_to_s3(BUCKET_NAME, "./results/model", "results/model")
     except Exception as e:
         print(f"An error occurred with uploading the model to s3: {e}")
-    # Output evaluation results
+
     output_eval_results(eval_result, model, model_name)
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
-    # Get the number of CPU cores
-    num_cores = os.cpu_count()
+    """Main execution function."""
+    print(f'This system has {os.cpu_count()} CPU cores.')
+    print(f"This system has {torch.cuda.device_count()} GPUs.")
 
-    # Print the number of CPU cores
-    print(f'This system has {num_cores} CPU cores.')
+    if not os.path.exists(PATH_TO_TRAINING_CSV):
+        print(f"Creating dummy data file at {PATH_TO_TRAINING_CSV}")
+        dummy_df = pd.DataFrame({
+            "text": ['"This product burned my skin badly"',
+                     "Coffee tastes burnt, terrible roast.",
+                     "Fire hazard — nearly caught fire!",
+                     "Great product, works well.",
+                     "Poor quality, waste of money."],
+            "human_tag": [1, 0, 1, 0, 0],
+            "star_rating": [1, 2, 1, 5, 2],
+        })
+        os.makedirs(os.path.dirname(PATH_TO_TRAINING_CSV), exist_ok=True)
+        dummy_df.to_csv(PATH_TO_TRAINING_CSV, index=False)
 
-    # Get the number of GPUs available
-    num_gpus = torch.cuda.device_count()
-
-    print(f"This system has {num_gpus} GPUs.")
-    # Load data
     df = load_dataset(PATH_TO_TRAINING_CSV)
- 
-    # The pipeline now expects the 'clean_text' column created by load_dataset
-    # run_encoding_pipeline(df=reviews_df, text_column_name='clean_text')
-    # df = df.head(NUM_EXAMPLES)
-    # Sample output:
-    # id, text, star rating, label
-    # 31679,mine almost burned house,1,1
+    df = df.head(NUM_EXAMPLES)
 
-    # for model_name in ['bert-base-uncased-emotion', 'bert-large-uncased']:
-    for model_name in ['allenai/longformer-base-4096']:
-        # Initialize tokenizer for Longformer
+    print(f"\nLabel distribution:\n{df['human_tag'].value_counts().sort_index()}")
+    print(f"Model: {config.MODEL_NAME}")
+    print(f"Max tokens: {config.MAX_TOKENS}")
+    print(f"Decision threshold: {config.DECISION_THRESHOLD}")
+    print(f"Class 1 weight: {config.CLASS_1_WEIGHT}\n")
+
+    for model_name in [config.MODEL_NAME]:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        num_labels = 2
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print('Using device:', device)
         model = AutoModelForSequenceClassification.from_pretrained(
             model_name,
-            num_labels=num_labels,
+            num_labels=config.NUM_LABELS,
         ).to(device)
         train_model(df, tokenizer, model, model_name, NUM_EPOCHS)
 
-    # Log message after training completes
     logging.info("Training process has completed.")
-    upload_directory_to_s3(BUCKET_NAME, "./results/training_log.txt", "results/training_log.txt")
 
 
 if __name__ == "__main__":
-    # Usage example
     main()

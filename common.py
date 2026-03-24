@@ -7,11 +7,12 @@ import os
 import sys
 import traceback
 from datetime import datetime
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional
 
 import numpy as np
 import pandas as pd
 import torch
+from transformers import AutoModel, AutoTokenizer
 
 def strip_outer_quotes(text: str) -> str:
     """Remove leading and trailing double quotes from ``text`` if present."""
@@ -83,6 +84,93 @@ def padding(tokenized: Iterable[Iterable[int]]) -> np.ndarray:
     max_len = max(len(seq) for seq in sequences)
     padded = np.array([list(seq) + [0] * (max_len - len(seq)) for seq in sequences])
     return padded
+
+# --- Model Persistence ---
+
+def save_model(model, filename: str, directory: str = "models") -> None:
+    """Persist a trained model to ``<directory>/<filename>.sav``."""
+    os.makedirs(directory, exist_ok=True)
+    file_path = os.path.join(directory, f"{filename}.sav")
+    logger.info("Saving model to %s", file_path)
+    import pickle
+    with open(file_path, "wb") as f:
+        pickle.dump(model, f)
+
+
+def load_model(filename: str):
+    """Load a pickled model from disk."""
+    import pickle
+    with open(filename, "rb") as f:
+        return pickle.load(f)
+
+
+# --- Classical ML Training ---
+
+def train_classifier(model_name, model, X_train, X_test, y_train, y_test):
+    """Train a single sklearn-compatible classifier, print metrics, and save it."""
+    from sklearn.metrics import classification_report, roc_auc_score, accuracy_score
+
+    history = model.fit(X_train, y_train)
+    print("Model: " + model_name)
+
+    y_test_pred = model.predict(X_test)
+    print(classification_report(y_test, np.around(y_test_pred)))
+    print(roc_auc_score(y_test, y_test_pred))
+
+    score = history.score(X_test, y_test)
+    print("Score: " + str(score))
+
+    predictions = [round(value) for value in y_test_pred]
+    accuracy = accuracy_score(y_test, predictions)
+    print("Accuracy: %.2f%%" % (accuracy * 100.0))
+
+    save_model(model, model_name)
+
+
+# Backwards compatibility
+trainClassifier = train_classifier
+
+
+# --- Tokenization helpers ---
+
+def tokenize_text1(df, text_column_name, model_class, tokenizer_class, pretrained_weights):
+    """Tokenize a text column using a pretrained model and return CLS embeddings."""
+    try:
+        logger.info("Starting to tokenize %s", text_column_name)
+        model = model_class.from_pretrained(pretrained_weights)
+        tokenizer = tokenizer_class.from_pretrained(pretrained_weights, do_lower_case=True)
+        model.resize_token_embeddings(len(tokenizer))
+        tokenized = df[text_column_name].apply(lambda x: tokenizer.encode(x, add_special_tokens=True))
+        padded = padding(tokenized)
+        return create_tensor(padded, model)
+    except Exception:
+        logger.exception("Exception in tokenize code")
+        traceback.print_exc(file=sys.stdout)
+        raise
+
+# Backwards compatibility
+tokenizeText1 = tokenize_text1
+
+
+def tokenize_text2(df, text_column_name, model_class, tokenizer_class, pretrained_weights):
+    """Tokenize a text column (token-level) using a pretrained model and return CLS embeddings."""
+    try:
+        logger.info("Starting to tokenize2 %s", text_column_name)
+        model = model_class.from_pretrained(pretrained_weights)
+        tokenizer = tokenizer_class.from_pretrained("distilbert-base-uncased", do_lower_case=True)
+        model.resize_token_embeddings(len(tokenizer))
+        tokens = df[text_column_name].apply(lambda x: tokenizer.tokenize(x)[:511])
+        tokenized = tokenizer.convert_tokens_to_ids(tokens)
+        padded = padding(tokenized[:511])
+        return create_tensor(padded, model)
+    except Exception:
+        logger.exception("Exception in tokenize2 code")
+        traceback.print_exc(file=sys.stdout)
+        raise
+
+# Backwards compatibility
+tokenizeText2 = tokenize_text2
+
 
 # --- Core Encoding Logic ---
 
