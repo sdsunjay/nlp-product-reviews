@@ -1,7 +1,7 @@
 """Centralized configuration for the NLP product reviews project."""
 
 # --- Paths ---
-PATH_TO_TRAINING_CSV = "./data/25_07_04_11_18_clean_training.csv"
+PATH_TO_TRAINING_CSV = "./data/clean_training3.csv"
 OUTPUT_MODEL_DIR = "models"
 RESULTS_DIR = "./results"
 
@@ -9,13 +9,46 @@ RESULTS_DIR = "./results"
 MODEL_NAME = "microsoft/deberta-v3-base"
 NUM_LABELS = 2
 
+# --- Hardware detection ---
+import os
+import torch as _torch
+
+HAS_CUDA = _torch.cuda.is_available()
+HAS_MPS = hasattr(_torch.backends, "mps") and _torch.backends.mps.is_available()
+
+if HAS_CUDA:
+    _gpu_mem_gb = _torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    DEVICE = "cuda"
+elif HAS_MPS:
+    DEVICE = "mps"
+    # Allow MPS to use more shared memory
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+else:
+    DEVICE = "cpu"
+
 # --- Training hyperparameters ---
 NUM_EPOCHS = 8
 LEARNING_RATE = 2e-5
-PER_DEVICE_TRAIN_BATCH_SIZE = 16
-PER_DEVICE_EVAL_BATCH_SIZE = 16
-GRADIENT_ACCUMULATION_STEPS = 1
-FP16 = True
+if HAS_CUDA and _gpu_mem_gb >= 32:
+    PER_DEVICE_TRAIN_BATCH_SIZE = 32
+    PER_DEVICE_EVAL_BATCH_SIZE = 32
+    GRADIENT_ACCUMULATION_STEPS = 1
+    FP16 = True
+elif HAS_CUDA:  # 16GB GPU
+    PER_DEVICE_TRAIN_BATCH_SIZE = 8
+    PER_DEVICE_EVAL_BATCH_SIZE = 8
+    GRADIENT_ACCUMULATION_STEPS = 4
+    FP16 = True
+elif HAS_MPS:  # Apple Silicon (shared 16GB RAM)
+    PER_DEVICE_TRAIN_BATCH_SIZE = 8
+    PER_DEVICE_EVAL_BATCH_SIZE = 8
+    GRADIENT_ACCUMULATION_STEPS = 4
+    FP16 = False
+else:  # CPU only
+    PER_DEVICE_TRAIN_BATCH_SIZE = 4
+    PER_DEVICE_EVAL_BATCH_SIZE = 4
+    GRADIENT_ACCUMULATION_STEPS = 8
+    FP16 = False
 WEIGHT_DECAY = 0.01
 WARMUP_STEPS = 500
 
@@ -34,7 +67,7 @@ SAFE_CHAR_LIMIT = 2000
 DECISION_THRESHOLD = 0.3
 
 # --- Data ---
-NUM_EXAMPLES = 1000
+NUM_EXAMPLES = 3200
 RANDOM_SEED = 913
 TEST_SIZE = 0.2
 
