@@ -2,7 +2,7 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from common import tokenizeText1, save_model, load_model, train_classifier as trainClassifier
+from common import tokenize_text1, save_model, load_model, train_classifier as trainClassifier
 import bert_model_training
 
 from datetime import datetime
@@ -39,7 +39,7 @@ def trainClassifiers(features, labels):
     model = LogisticRegression(max_iter=200)
     trainClassifier(model_name, model, X_train, X_test, y_train, y_test)
 
-    model_name = 'MLP100'
+    model_name = 'MLP100_30layers'
     model = MLPClassifier(hidden_layer_sizes=(100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100))
     trainClassifier(model_name, model, X_train, X_test, y_train, y_test)
 
@@ -144,34 +144,23 @@ def trainClassifiers(features, labels):
     print("End time: ", end_time.strftime("%m/%d/%Y, %H:%M:%S"))
     print("End time Duration: " + str(end_time - begin_time_train))
 
-def testing(features):
+def testing(features, labels, pretrained_weights):
 
     testing_filepath = 'data/clean_testing1.csv'
     # Check whether the specified path exists or not
-    isExist = os.path.exists(testing_filepath)
-    if(isExist):
-        print('Reading from ' + testing_filepath)
-    else:
+    if not os.path.exists(testing_filepath):
         print('Testing file not found in the app path.')
-        exit()
-    df1 = read_data(testing_filepath)
-    df1["clean_text"] = df1["clean_text"].map(strip_outer_quotes)
+        return
+    print('Reading from ' + testing_filepath)
+    df1 = bert_model_training.load_dataset(testing_filepath)
     df1 = df1.dropna()
-    a = np.array_split(df1,8)
-    i = 0
+    a = np.array_split(df1, 8)
     values = []
-    for aa in a:
-        output_name = str(i)
-        print('Run: ' + output_name)
-        i += 1
-        testing_features  = tokenizeText1(aa, 'clean_text', model_class, tokenizer_class, pretrained_weights)
-        final_y_pred = trainClassifiers(features, labels, testing_features)
-        values = np.concatenate((values, final_y_pred), axis=0)
-    # df1["human_tag"] = values
-    # header = ["ID", "human_tag"]
-    # output_path = 'result/MLP100'
-    # print('Output: ' + output_path)
-    # df1.to_csv(output_path, columns = header)
+    for i, aa in enumerate(a):
+        print('Run: ' + str(i))
+        testing_features = tokenize_text1(aa, 'clean_text', AutoModel, AutoTokenizer, pretrained_weights)
+        trainClassifiers(testing_features, labels)
+
 
 def main():
     """Main function of the program."""
@@ -183,9 +172,8 @@ def main():
     labels = df['human_tag']
 
     pretrained_weights = 'allenai/longformer-base-4096'
-    features = tokenizeText1(
+    features = tokenize_text1(
         df,
-        labels,
         'clean_text',
         AutoModel,
         AutoTokenizer,
@@ -195,7 +183,7 @@ def main():
 
     end_time = datetime.now()
     print("End time: ", end_time.strftime("%m/%d/%Y, %H:%M:%S"))
-    print("End time Duration: " + str(end_time - begin_time_main))
+    print("Duration: " + str(end_time - begin_time_main))
 
     trainClassifiers(features, labels)
 

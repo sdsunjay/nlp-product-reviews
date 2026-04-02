@@ -1,52 +1,51 @@
-# import necessary modules
-import torch
-from torch.utils.data import TensorDataset
-from transformers import BertTokenizer, BertModel
+import json
+import sys
+import multiprocessing
+import openai
+import pandas as pd
 
-# create a dataset of input text and corresponding labels
-dataset = TensorDataset(bert_inputs, labels)
+# Set up your OpenAI API key
+openai.api_key = "<YOUR KEY>"
 
-# load the pre-trained BERT model
-bert_model = BertModel.from_pretrained("bert-base-uncased")
+def process_data(chunk):
+    # Prepare your training data for fine-tuning
+    formatted_training_data = []
+    for index, row in chunk.iterrows():
+        formatted_training_data.append({
+            "prompt": row["clean_text"],
+            "completion": [row["human_tag"]]
+        })
 
-# create a classification head and add it on top of the BERT model
-classification_head = torch.nn.Linear(in_features=768, out_features=1)
-model = torch.nn.Sequential(bert_model, classification_head)
+    # Fine-tune the model on your training data
+    model_engine = "text-ada-001"
+    model = openai.Model(model_engine)
+    model.fine_tune(
+        examples=formatted_training_data,
+        batch_size=16,
+        epochs=5
+        )
 
-# train the fine-tuned BERT model
-optimizer = torch.optim.Adam(model.parameters(), lr=2e-5)
-loss_fn = torch.nn.BCEWithLogitsLoss()
 
-for epoch in range(num_epochs):
-  for batch in dataloader:
-    # unpack the input and labels
-    bert_inputs, labels = batch
+# Load your data in chunks
+training_path = "data/clean_training2_prepared.jsonl"
+with open(training_path) as f:
+    dataset = [json.loads(line) for line in f]
 
-    # pass the inputs through the model
-    logits = model(bert_inputs)
+formatted_training_data = []
+for row in dataset:
+    formatted_training_data.append({
+        "text": row.get("clean_text", ""),
+        "labels": [row.get("human_tag", 0)]
+    })
 
-    # compute the loss
-    loss = loss_fn(logits, labels)
+# Fine-tune the model on your training data
+model_engine = "text-curie-001"
+model = openai.Model(model_engine)
+model.fine_tune(
+    examples=formatted_training_data,
+    batch_size=16,
+    epochs=5
+    )
 
-    # backpropagate the gradients
-    loss.backward()
-
-    # update the model's weights
-    optimizer.step()
-
-    # zero the gradients
-    optimizer.zero_grad()
-
-# evaluate the fine-tuned BERT model on a validation set
-for batch in validation_dataloader:
-  # unpack the input and labels
-  bert_inputs, labels = batch
-
-  # pass the inputs through the model
-  logits = model(bert_inputs)
-
-  # compute the loss
-  loss = loss_fn(logits, labels)
-
-  # print the validation loss
-  print(loss.item())
+# Save the fine-tuned model
+model.save("fine_tuned_model")

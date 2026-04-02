@@ -39,6 +39,20 @@ from preprocess import clean_text, read_data, read_clean_data
 from common import strip_outer_quotes
 
 import logging
+import time
+import warnings
+
+# Suppress expected fine-tuning warnings
+warnings.filterwarnings("ignore", message=".*not initialized from the model checkpoint.*")
+warnings.filterwarnings("ignore", message=".*byte fallback option.*")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
+
+
+# ---------------------------------------------------------------------------
+# AWS / logging setup
+# ---------------------------------------------------------------------------
+
 
 
 # ---------------------------------------------------------------------------
@@ -60,20 +74,21 @@ def prepend_star_rating(text: str, star_rating) -> str:
 
 BUCKET_NAME = config.S3_BUCKET_NAME
 
-os.makedirs(config.RESULTS_DIR, exist_ok=True)
-logging.basicConfig(filename=os.path.join(config.RESULTS_DIR, 'training_log.txt'),
-                    filemode='a',
-                    level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-
-logging.info("Training process starts")
-
 PATH_TO_TRAINING_CSV = config.PATH_TO_TRAINING_CSV
 OUTPUT_MODEL_DIR = config.OUTPUT_MODEL_DIR
 
 NUM_EXAMPLES = config.NUM_EXAMPLES
 NUM_EPOCHS = config.NUM_EPOCHS
 RANDOM_SEED = config.RANDOM_SEED
+
+
+def _setup_logging():
+    """Configure file logging (call once from main)."""
+    os.makedirs(config.RESULTS_DIR, exist_ok=True)
+    logging.basicConfig(filename=os.path.join(config.RESULTS_DIR, 'training_log.txt'),
+                        filemode='a',
+                        level=logging.INFO,
+                        format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 # ---------------------------------------------------------------------------
@@ -188,9 +203,10 @@ def output_eval_results(eval_result, model, model_name):
     eval_result_json_str = json.dumps(eval_result, indent=4)
     print(eval_result_json_str)
 
-    directory = f'./{OUTPUT_MODEL_DIR}/{model_name}'
+    safe_name = model_name.replace("/", "_")
+    directory = os.path.join(config.RESULTS_DIR, safe_name)
     os.makedirs(directory, exist_ok=True)
-    with open(f'{directory}/{eval_time}_eval_result.json', 'w') as f:
+    with open(os.path.join(directory, f'{eval_time}_eval_result.json'), 'w') as f:
         f.write(eval_result_json_str)
 
 
@@ -339,8 +355,10 @@ def compute_class_weights(labels):
 
 def train_model(df, tokenizer, model, model_name, epochs):
     """Trains the model on the provided data."""
+    run_start = time.time()
     train_texts, val_texts, train_labels, val_labels = split_data(df)
 
+    # Use the fixed tokenize_data function
     train_encodings = tokenize_data(train_texts, tokenizer)
     val_encodings = tokenize_data(val_texts, tokenizer)
 
@@ -358,6 +376,7 @@ def train_model(df, tokenizer, model, model_name, epochs):
         per_device_eval_batch_size=config.PER_DEVICE_EVAL_BATCH_SIZE,
         gradient_accumulation_steps=config.GRADIENT_ACCUMULATION_STEPS,
         fp16=config.FP16,
+        no_cuda=config.FORCE_CPU,
         load_best_model_at_end=True,
         metric_for_best_model="recall_class1",
         greater_is_better=True,
@@ -385,12 +404,17 @@ def train_model(df, tokenizer, model, model_name, epochs):
     print(f"Recommended DECISION_THRESHOLD: {best_thr:.2f}")
 
     eval_result = trainer.evaluate()
+    total_seconds = time.time() - run_start
     eval_result["recommended_threshold"] = best_thr
+    eval_result["total_runtime_seconds"] = round(total_seconds, 1)
+    eval_result["total_runtime_human"] = f"{int(total_seconds // 3600)}h {int((total_seconds % 3600) // 60)}m {int(total_seconds % 60)}s"
+    print(f"\nTotal run time: {eval_result['total_runtime_human']}")
 
     try:
         safe_name = model_name.replace("/", "_")
-        trainer.save_model(f"./results/model/{safe_name}")
-        upload_directory_to_s3(BUCKET_NAME, "./results/model", "results/model")
+        model_dir = os.path.join(config.RESULTS_DIR, "model", safe_name)
+        trainer.save_model(model_dir)
+        upload_directory_to_s3(BUCKET_NAME, model_dir, "results/model")
     except Exception as e:
         print(f"An error occurred with uploading the model to s3: {e}")
 
@@ -403,6 +427,8 @@ def train_model(df, tokenizer, model, model_name, epochs):
 
 def main():
     """Main execution function."""
+    _setup_logging()
+    logging.info("Training process starts")
     print(f'This system has {os.cpu_count()} CPU cores.')
     print(f"This system has {torch.cuda.device_count()} GPUs.")
 
@@ -431,7 +457,7 @@ def main():
 
     for model_name in [config.MODEL_NAME]:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device(config.DEVICE)
         print('Using device:', device)
         model = AutoModelForSequenceClassification.from_pretrained(
             model_name,

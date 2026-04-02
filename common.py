@@ -35,7 +35,7 @@ def read_data(filepath: str) -> pd.DataFrame:
 
 def get_dataframe(
     training_filepath: str = "data/clean_training1.csv",
-    sample_frac: float = 1.0
+    sample_frac: float = 0.5
 ) -> pd.DataFrame:
     """Return a cleaned ``DataFrame`` from ``training_filepath``.
 
@@ -126,7 +126,6 @@ def train_classifier(model_name, model, X_train, X_test, y_train, y_test):
 
     save_model(model, model_name)
 
-
 # Backwards compatibility
 trainClassifier = train_classifier
 
@@ -196,7 +195,7 @@ def create_embeddings(
         # Extract sentences from DataFrame
         if text_column_name not in df.columns:
             raise ValueError(f"Column '{text_column_name}' not found in DataFrame.")
-        
+
         sentences = df[text_column_name].dropna().astype(str).tolist()
         embeddings = {}
 
@@ -220,16 +219,16 @@ def create_embeddings(
                     chunk_ids = input_ids[start:end]
                     if not chunk_ids:
                         continue
-                    
+
                     chunk_with_special_tokens = [tokenizer.cls_token_id] + chunk_ids + [tokenizer.sep_token_id]
                     chunk_tensor = torch.tensor([chunk_with_special_tokens])
-                    
+
                     with torch.no_grad():
                         outputs = model(chunk_tensor)
-                    
+
                     chunk_embeddings = outputs.last_hidden_state[0, 1:-1, :]
                     all_chunk_embeddings.append(chunk_embeddings)
-                
+
                 mean_embedding = torch.cat(all_chunk_embeddings, dim=0).mean(dim=0)
                 embeddings[sentence] = mean_embedding
 
@@ -253,7 +252,7 @@ def run_encoding_pipeline(df: pd.DataFrame, text_column_name: str, model_name: s
         timestamp = datetime.now().strftime("%Y-%m-%d-%H")
         safe_model_name = model_name.replace('/', '-')
         output_filename = f"{safe_model_name}_{timestamp}.pt"
-        
+
         print(f"Saving embeddings to '{output_filename}'...")
         torch.save(sentence_embeddings, output_filename)
         print("Embeddings saved successfully.\n")
@@ -266,7 +265,7 @@ def run_encoding_pipeline(df: pd.DataFrame, text_column_name: str, model_name: s
             if embedding is None:
                 print("  Status: FAILED")
                 continue
-            
+
             print(f"  Status: SUCCESS")
             print(f"  Shape of output tensor: {embedding.shape}")
             if len(embedding.shape) > 1:
@@ -280,4 +279,3 @@ def run_encoding_pipeline(df: pd.DataFrame, text_column_name: str, model_name: s
     except Exception as exc:
         print(f"A critical error occurred in the pipeline: {exc}", file=sys.stderr)
         traceback.print_exc(file=sys.stdout)
-

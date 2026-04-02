@@ -8,7 +8,6 @@ import re
 
 import pickle
 import string
-import re
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
@@ -24,7 +23,6 @@ from nltk.probability import FreqDist
 MAX_TOKENS = 1000
 MAX_WORDS = 1000
 
-import emoji
 import unicodedata
 
 stop_words = {
@@ -60,8 +58,8 @@ def remove_stop_words(text):
             if word not in stop_words:
                 final_string.append(word)
     except Exception as e:
-        print("type error")
-        exit()
+        print(f"Error removing stop words: {e}")
+        raise
     return ' '.join(final_string)
 
 def replace_emojis(text):
@@ -79,7 +77,8 @@ def clean_text(text):
     fixed_text = ftfy.fix_text(translated_text)
     cleanr = re.compile('<.*?>|&([a-z0-9]+|#[0-9]{1,6}|#x[0-9a-f]{1,6});')
     text = cleanr.sub('', fixed_text.strip())
-    return remove_stop_words(unicodedata.normalize('NFC', text))
+    stop_words_removed = remove_stop_words(unicodedata.normalize('NFC', text))
+    return stop_words_removed
 
 def ensure_surrounding_quotes(text: str) -> str:
     """Return ``text`` wrapped in double quotes if not already."""
@@ -155,7 +154,7 @@ def main():
     df = read_data(training_filepath)
     df["clean_text"] = df["clean_text"].apply(ensure_surrounding_quotes)
     header = ["clean_text", "star_rating", "human_tag"]
-    output_path = f'data/{current_time}_clean_training.csv'
+    output_path = f'./data/{current_time}_clean_training.csv'
     print(f"Outputing to {output_path}")
     df.to_csv(
         output_path,
@@ -167,4 +166,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

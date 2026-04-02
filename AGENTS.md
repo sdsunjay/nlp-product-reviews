@@ -10,6 +10,11 @@ The following files are experimental and should be ignored when modifying or ana
 - `tfDataLoader.py`
 - `test.py`
 
+## Commits
+- Never include "Claude" or any AI co-author attribution in commit messages.
+- Never add a `Co-Authored-By` line referencing Claude or Anthropic.
+- Always commit to a branch, never directly to master.
+
 ## Style
 - Follow **PEP8** (4-space indentation, max 79 characters per line).
 - Use docstrings for all public functions.
