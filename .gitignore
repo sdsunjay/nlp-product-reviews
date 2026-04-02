@@ -1,5 +1,6 @@
 .idea/
 .DS_Store
+tmp
 include/
 my_model
 bin/

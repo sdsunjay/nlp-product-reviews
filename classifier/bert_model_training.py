@@ -74,21 +74,21 @@ def prepend_star_rating(text: str, star_rating) -> str:
 
 BUCKET_NAME = config.S3_BUCKET_NAME
 
-
-os.makedirs(config.RESULTS_DIR, exist_ok=True)
-logging.basicConfig(filename=os.path.join(config.RESULTS_DIR, 'training_log.txt'),
-                    filemode='a',
-                    level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-
-logging.info("Training process starts")
-
 PATH_TO_TRAINING_CSV = config.PATH_TO_TRAINING_CSV
 OUTPUT_MODEL_DIR = config.OUTPUT_MODEL_DIR
 
 NUM_EXAMPLES = config.NUM_EXAMPLES
 NUM_EPOCHS = config.NUM_EPOCHS
 RANDOM_SEED = config.RANDOM_SEED
+
+
+def _setup_logging():
+    """Configure file logging (call once from main)."""
+    os.makedirs(config.RESULTS_DIR, exist_ok=True)
+    logging.basicConfig(filename=os.path.join(config.RESULTS_DIR, 'training_log.txt'),
+                        filemode='a',
+                        level=logging.INFO,
+                        format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +376,7 @@ def train_model(df, tokenizer, model, model_name, epochs):
         per_device_eval_batch_size=config.PER_DEVICE_EVAL_BATCH_SIZE,
         gradient_accumulation_steps=config.GRADIENT_ACCUMULATION_STEPS,
         fp16=config.FP16,
+        no_cuda=config.FORCE_CPU,
         load_best_model_at_end=True,
         metric_for_best_model="recall_class1",
         greater_is_better=True,
@@ -426,6 +427,8 @@ def train_model(df, tokenizer, model, model_name, epochs):
 
 def main():
     """Main execution function."""
+    _setup_logging()
+    logging.info("Training process starts")
     print(f'This system has {os.cpu_count()} CPU cores.')
     print(f"This system has {torch.cuda.device_count()} GPUs.")
 

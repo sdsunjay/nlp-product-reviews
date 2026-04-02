@@ -13,9 +13,16 @@ NUM_LABELS = 2
 import os
 import torch as _torch
 
-HAS_CUDA = _torch.cuda.is_available()
-HAS_MPS = hasattr(_torch.backends, "mps") and _torch.backends.mps.is_available()
+FORCE_CPU = False  # Set to False to auto-detect GPU/MPS
 
+if FORCE_CPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "0"
+
+HAS_CUDA = not FORCE_CPU and _torch.cuda.is_available()
+HAS_MPS = not FORCE_CPU and hasattr(_torch.backends, "mps") and _torch.backends.mps.is_available()
+
+_gpu_mem_gb = 0
 if HAS_CUDA:
     _gpu_mem_gb = _torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
     DEVICE = "cuda"
@@ -45,9 +52,9 @@ elif HAS_MPS:  # Apple Silicon (shared 16GB RAM)
     GRADIENT_ACCUMULATION_STEPS = 4
     FP16 = False
 else:  # CPU only
-    PER_DEVICE_TRAIN_BATCH_SIZE = 4
-    PER_DEVICE_EVAL_BATCH_SIZE = 4
-    GRADIENT_ACCUMULATION_STEPS = 8
+    PER_DEVICE_TRAIN_BATCH_SIZE = 16
+    PER_DEVICE_EVAL_BATCH_SIZE = 16
+    GRADIENT_ACCUMULATION_STEPS = 2
     FP16 = False
 WEIGHT_DECAY = 0.01
 WARMUP_STEPS = 500
@@ -67,8 +74,8 @@ SAFE_CHAR_LIMIT = 2000
 DECISION_THRESHOLD = 0.3
 
 # --- Data ---
-NUM_EXAMPLES = 3200
-RANDOM_SEED = 913
+NUM_EXAMPLES = 1600
+RANDOM_SEED = 1512
 TEST_SIZE = 0.2
 
 # --- AWS ---
